@@ -73,13 +73,16 @@ app.use(cookieParser());
 app.use(databaseGate);
 
 app.get('/', (_req, res) => res.json({ success: true, message: 'Campus Coin API' }));
-app.get('/api/health', (_req, res) =>
+// Must never be cached: a shared cache happily serves a stale "disconnected" reading
+// from a cold start, which makes the health check lie about the database.
+app.get('/api/health', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
   res.json({
     success: true,
     message: 'Campus Coin API running',
     database: [1, 2].includes(mongoose.connection.readyState) ? 'connected' : 'disconnected'
-  })
-);
+  });
+});
 
 app.use('/api/auth', authRoutes);
 app.use('/api/transactions', transactionRoutes);
