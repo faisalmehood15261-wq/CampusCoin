@@ -26,10 +26,21 @@ import { databaseGate } from './startup.js';
 
 const app = express();
 
-const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+// Own deployments. Kept in code so a stale or missing CLIENT_URL in the host dashboard can
+// never lock the shipped frontend out of its own API. Never wildcard a shared host such as
+// *.vercel.app here: the session cookie is SameSite=None, so any allowed origin can send
+// authenticated requests. Add preview/staging origins through CLIENT_URL instead.
+const DEFAULT_ORIGINS = [
+  'https://campus-coin-client.vercel.app',
+  'https://campus-coin-client.vercel.app',
+  'http://localhost:5173'
+];
+
+const allowedOrigins = new Set(
+  [...DEFAULT_ORIGINS, ...(process.env.CLIENT_URL || '').split(',')]
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
 
 // Vercel/Netlify terminate TLS in front of the function, so rate limiting and
 // secure cookies need the real client IP.
@@ -39,7 +50,7 @@ app.use(helmet());
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      if (!origin || allowedOrigins.has(origin)) return callback(null, true);
       return callback(null, false);
     },
     credentials: true,
