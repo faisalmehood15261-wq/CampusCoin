@@ -16,13 +16,13 @@ export const register = asyncHandler(async (req, res) => {
   const normalized = String(email).trim().toLowerCase(); if (await User.exists({ email: normalized })) throw fail('An account already exists for this email.', 409);
   await ensureDefaultCategories();
   const user = await User.create({ name, email: normalized, passwordHash: await bcrypt.hash(password, 12), academicYear, monthlyAllowance: Number(monthlyAllowance) || 0, savingsGoal: Number(savingsGoal) || 0 });
-  setSession(res, user); await recordLogin(user._id); res.status(201).json({ success: true, user: cleanUser(user) });
+  setSession(req, res, user); await recordLogin(user._id); res.status(201).json({ success: true, user: cleanUser(user) });
 });
 export const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body; const user = await User.findOne({ email: String(email || '').trim().toLowerCase() }).select('+passwordHash');
   if (!user || user.role === 'admin' || !user.passwordHash || !(await bcrypt.compare(password || '', user.passwordHash))) throw fail('Invalid email or password.', 401);
   if (!user.isActive) throw fail('This account has been disabled. Contact your administrator.', 403);
-  user.lastLoginAt = new Date(); await user.save(); setSession(res, user); await recordLogin(user._id); res.json({ success: true, user: cleanUser(user) });
+  user.lastLoginAt = new Date(); await user.save(); setSession(req, res, user); await recordLogin(user._id); res.json({ success: true, user: cleanUser(user) });
 });
 export const adminLogin = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
@@ -33,7 +33,7 @@ export const adminLogin = asyncHandler(async (req, res) => {
   }
   if (!user.isActive) throw fail('This account has been disabled. Contact your administrator.', 403);
   user.lastLoginAt = new Date(); await user.save();
-  setSession(res, user); await recordLogin(user._id);
+  setSession(req, res, user); await recordLogin(user._id);
   res.json({ success: true, user: cleanUser(user) });
 });
 export const google = asyncHandler(async (req, res) => {
@@ -44,9 +44,9 @@ export const google = asyncHandler(async (req, res) => {
   if (user && !user.googleId) { user.googleId = profile.sub; user.authProvider = 'google'; user.avatar ||= profile.picture; await user.save(); }
   if (!user) user = await User.create({ name: profile.name || profile.email.split('@')[0], email: profile.email.toLowerCase(), googleId: profile.sub, avatar: profile.picture, authProvider: 'google' });
   if (!user.isActive) throw fail('This account has been disabled. Contact your administrator.', 403);
-  user.lastLoginAt = new Date(); await user.save(); setSession(res, user); await recordLogin(user._id); res.json({ success: true, user: cleanUser(user) });
+  user.lastLoginAt = new Date(); await user.save(); setSession(req, res, user); await recordLogin(user._id); res.json({ success: true, user: cleanUser(user) });
 });
-export const logout = asyncHandler(async (_req, res) => { clearSession(res); res.json({ success: true }); });
+export const logout = asyncHandler(async (req, res) => { clearSession(req, res); res.json({ success: true }); });
 export const me = asyncHandler(async (req, res) => res.json({ success: true, user: cleanUser(req.user) }));
 export const forgotPassword = asyncHandler(async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
@@ -110,4 +110,4 @@ export const forgotPassword = asyncHandler(async (req, res) => {
     message: 'If an eligible account exists, a password reset link has been sent.'
   });
 });
-export const resetPassword = asyncHandler(async (req, res) => { const { token, password, confirmPassword } = req.body; if (!token || !password || password !== confirmPassword || password.length < 8) throw fail('Provide matching passwords with at least 8 characters.'); const tokenHash = crypto.createHash('sha256').update(token).digest('hex'); const reset = await PasswordReset.findOne({ tokenHash, expiresAt: { $gt: new Date() } }); if (!reset) throw fail('This reset link is invalid or expired.', 400); const user = await User.findById(reset.userId).select('+passwordHash'); if (!user || !user.isActive) throw fail('This reset link is invalid or expired.', 400); user.passwordHash = await bcrypt.hash(password, 12); user.authProvider = user.googleId ? user.authProvider : 'local'; await user.save(); await PasswordReset.deleteMany({ userId: user._id }); clearSession(res); res.json({ success: true, message: 'Password updated. Please sign in.' }); });
+export const resetPassword = asyncHandler(async (req, res) => { const { token, password, confirmPassword } = req.body; if (!token || !password || password !== confirmPassword || password.length < 8) throw fail('Provide matching passwords with at least 8 characters.'); const tokenHash = crypto.createHash('sha256').update(token).digest('hex'); const reset = await PasswordReset.findOne({ tokenHash, expiresAt: { $gt: new Date() } }); if (!reset) throw fail('This reset link is invalid or expired.', 400); const user = await User.findById(reset.userId).select('+passwordHash'); if (!user || !user.isActive) throw fail('This reset link is invalid or expired.', 400); user.passwordHash = await bcrypt.hash(password, 12); user.authProvider = user.googleId ? user.authProvider : 'local'; await user.save(); await PasswordReset.deleteMany({ userId: user._id }); clearSession(req, res); res.json({ success: true, message: 'Password updated. Please sign in.' }); });
