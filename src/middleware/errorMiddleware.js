@@ -1,0 +1,2 @@
+export function notFound(req, _res, next) { next(Object.assign(new Error(`Route ${req.method} ${req.originalUrl} was not found.`), { statusCode: 404 })); }
+export function errorHandler(error, _req, res, _next) { const status = error.statusCode || (error.name === 'CastError' ? 400 : 500); if (status >= 500) console.error(error); res.status(status).json({ success: false, message: status >= 500 && process.env.NODE_ENV === 'production' ? 'Something went wrong.' : error.message || 'Request failed.' }); }
