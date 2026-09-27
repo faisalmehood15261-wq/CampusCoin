@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import { OAuth2Client } from 'google-auth-library';
 import { Category, DEFAULT_CATEGORIES, ActivityLog, PasswordReset, User } from '../models/index.js';
 import { asyncHandler, cleanUser, fail } from '../utils/http.js';
+import { publicAppUrl } from '../config/urls.js';
 import { clearSession, setSession } from '../utils/auth.js';
 import { sendMail } from '../services/emailService.js';
 
@@ -69,9 +70,7 @@ export const forgotPassword = asyncHandler(async (req, res) => {
       expiresAt: new Date(Date.now() + 60 * 60 * 1000)
     });
 
-    const link = `${
-      process.env.CLIENT_URL || 'https://studentscampuscoin.netlify.app'
-    }/reset-password/${token}`;
+    const link = `${publicAppUrl()}/reset-password/${token}`;
 
     await sendMail({
       to: user.email,
