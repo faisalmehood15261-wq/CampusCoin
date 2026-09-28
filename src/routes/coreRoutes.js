@@ -86,6 +86,7 @@ export const insightRouter = Router();
 insightRouter.use(requireAuth);
 
 insightRouter.get('/', c.listInsights);
+insightRouter.delete('/', c.clearInsights);
 
 export const aiRouter = Router();
 

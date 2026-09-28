@@ -1,5 +1,4 @@
 import { Readable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
 import csv from 'csv-parser';
 import { Category, Notification, OCRImport, Transaction, ActivityLog } from '../models/index.js';
 import { asyncHandler, fail, monthKey } from '../utils/http.js';
@@ -15,30 +14,37 @@ export const deleteTransaction = asyncHandler(async (req, res) => { const transa
 function parseCSV(buffer) { return new Promise((resolve, reject) => { const rows = []; Readable.from(buffer).pipe(csv()).on('data', row => rows.push(row)).on('end', () => resolve(rows)).on('error', reject); }); }
 export const importCSV = asyncHandler(async (req, res) => { if (!req.file) throw fail('Upload a CSV file.'); const rows = await parseCSV(req.file.buffer); if (!rows.length) throw fail('The CSV is empty.'); if (rows.length > 500) throw fail('Import up to 500 rows at a time.'); const categories = await Category.find({ $or: [{ userId: req.user._id }, { isDefault: true }] }); const imported = []; const errors = []; for (let i = 0; i < rows.length; i += 1) { try { const row = rows[i]; const type = String(row.type || row.Type || 'expense').toLowerCase(); const name = String(row.category || row.Category || 'Miscellaneous').trim(); const category = categories.find(c => c.type === type && c.name.toLowerCase() === name.toLowerCase()); if (!category) throw new Error(`Category “${name}” (${type}) is unavailable.`); imported.push(await transactionPayload({ amount: row.amount || row.Amount, type, categoryId: category._id, description: row.description || row.Description, source: row.source || row.Source, date: row.date || row.Date, notes: row.notes || row.Notes }, req.user._id, 'csv')); } catch (error) { errors.push({ row: i + 2, message: error.message }); } } const saved = imported.length ? await Transaction.insertMany(imported) : []; await Promise.all(saved.map(evaluateBudget)); res.status(201).json({ success: true, imported: saved.length, errors }); });
 const detectReceipt = (text) => { const amounts = [...text.matchAll(/(?:Rs\.?|PKR|\$)?\s*([0-9]{1,7}(?:[,.][0-9]{2})?)/gi)].map(m => Number(m[1].replace(',', ''))).filter(n => Number.isFinite(n)); const dateMatch = text.match(/\b(?:\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|\d{4}[\/-]\d{1,2}[\/-]\d{1,2})\b/); return { detectedAmount: amounts.length ? Math.max(...amounts) : undefined, detectedDate: dateMatch ? new Date(dateMatch[0]) : undefined, detectedDescription: text.split(/\n+/).map(x => x.trim()).find(x => x.length > 3 && !/total|cash|tax|date/i.test(x)) || '' }; };
-const OCR_LANG_PATH = fileURLToPath(new URL('../../', import.meta.url));
+const OCR_LANG_PATH = process.cwd();
 
 async function recognizeReceipt(image) {
-	const worker = await createWorker('eng', 1, {
+	let worker;
+	let timedOut = false;
+	let timeoutId;
+	const timeout = new Promise((_, reject) => {
+		timeoutId = setTimeout(() => {
+			timedOut = true;
+			reject(fail('Receipt OCR timed out. Try a smaller or clearer image.', 504));
+		}, 45_000);
+	});
+	const workerPromise = createWorker('eng', 1, {
 		langPath: OCR_LANG_PATH,
 		gzip: false,
 		cacheMethod: 'none'
 	});
-	let timeoutId;
+	workerPromise.then(createdWorker => {
+		if (timedOut) createdWorker.terminate().catch(() => {});
+	}, () => {});
 
 	try {
+		worker = await Promise.race([workerPromise, timeout]);
 		const result = await Promise.race([
 			worker.recognize(image),
-			new Promise((_, reject) => {
-				timeoutId = setTimeout(
-					() => reject(fail('Receipt OCR timed out. Try a smaller or clearer image.', 504)),
-					45_000
-				);
-			})
+			timeout
 		]);
 		return result.data.text;
 	} finally {
 		clearTimeout(timeoutId);
-		await worker.terminate();
+		if (worker) await worker.terminate();
 	}
 }
 

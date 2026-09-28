@@ -703,6 +703,15 @@ export const listInsights = asyncHandler(async (req, res) =>
   })
 );
 
+export const clearInsights = asyncHandler(async (req, res) => {
+  await Promise.all([
+    Insight.deleteMany({ userId: req.user._id }),
+    Bookmark.deleteMany({ userId: req.user._id, targetType: 'insight' }),
+  ]);
+
+  res.json({ success: true });
+});
+
 const ownDataPrompt = async (userId, month) => {
   const summary = await transactionSummary(userId, month);
 
