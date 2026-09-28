@@ -1,9 +1,10 @@
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import csv from 'csv-parser';
 import { Category, Notification, OCRImport, Transaction, ActivityLog } from '../models/index.js';
 import { asyncHandler, fail, monthKey } from '../utils/http.js';
 import { evaluateBudget, flagTransaction } from '../services/financeService.js';
-import Tesseract from 'tesseract.js';
+import { createWorker } from 'tesseract.js';
 
 const ownCategory = async (id, userId, type) => { const category = await Category.findOne({ _id: id, type, $or: [{ userId }, { isDefault: true }] }); if (!category) throw fail('Choose a category you can access that matches the transaction type.'); return category; };
 const transactionPayload = async (body, userId, method = 'manual') => { const { categoryId, amount, type, description, source, date, isRecurring, recurringType, notes, aiSuggestedCategory, aiConfidence, isAICategoryAccepted } = body; if (!categoryId || !amount || !type) throw fail('Amount, type, and category are required.'); await ownCategory(categoryId, userId, type); const normalized = { userId, categoryId, amount: Number(amount), type, description: description?.trim(), source: source?.trim(), date: date ? new Date(date) : new Date(), isRecurring: Boolean(isRecurring), recurringType: isRecurring ? recurringType || 'monthly' : null, notes, inputMethod: method, aiSuggestedCategory, aiConfidence, isAICategoryAccepted }; if (!(normalized.amount > 0)) throw fail('Amount must be greater than zero.'); return { ...normalized, ...(await flagTransaction(normalized)) }; };
@@ -14,5 +15,32 @@ export const deleteTransaction = asyncHandler(async (req, res) => { const transa
 function parseCSV(buffer) { return new Promise((resolve, reject) => { const rows = []; Readable.from(buffer).pipe(csv()).on('data', row => rows.push(row)).on('end', () => resolve(rows)).on('error', reject); }); }
 export const importCSV = asyncHandler(async (req, res) => { if (!req.file) throw fail('Upload a CSV file.'); const rows = await parseCSV(req.file.buffer); if (!rows.length) throw fail('The CSV is empty.'); if (rows.length > 500) throw fail('Import up to 500 rows at a time.'); const categories = await Category.find({ $or: [{ userId: req.user._id }, { isDefault: true }] }); const imported = []; const errors = []; for (let i = 0; i < rows.length; i += 1) { try { const row = rows[i]; const type = String(row.type || row.Type || 'expense').toLowerCase(); const name = String(row.category || row.Category || 'Miscellaneous').trim(); const category = categories.find(c => c.type === type && c.name.toLowerCase() === name.toLowerCase()); if (!category) throw new Error(`Category “${name}” (${type}) is unavailable.`); imported.push(await transactionPayload({ amount: row.amount || row.Amount, type, categoryId: category._id, description: row.description || row.Description, source: row.source || row.Source, date: row.date || row.Date, notes: row.notes || row.Notes }, req.user._id, 'csv')); } catch (error) { errors.push({ row: i + 2, message: error.message }); } } const saved = imported.length ? await Transaction.insertMany(imported) : []; await Promise.all(saved.map(evaluateBudget)); res.status(201).json({ success: true, imported: saved.length, errors }); });
 const detectReceipt = (text) => { const amounts = [...text.matchAll(/(?:Rs\.?|PKR|\$)?\s*([0-9]{1,7}(?:[,.][0-9]{2})?)/gi)].map(m => Number(m[1].replace(',', ''))).filter(n => Number.isFinite(n)); const dateMatch = text.match(/\b(?:\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|\d{4}[\/-]\d{1,2}[\/-]\d{1,2})\b/); return { detectedAmount: amounts.length ? Math.max(...amounts) : undefined, detectedDate: dateMatch ? new Date(dateMatch[0]) : undefined, detectedDescription: text.split(/\n+/).map(x => x.trim()).find(x => x.length > 3 && !/total|cash|tax|date/i.test(x)) || '' }; };
-export const processOCR = asyncHandler(async (req, res) => { if (!req.file) throw fail('Upload a JPEG, PNG, or WebP receipt image.'); const item = await OCRImport.create({ userId: req.user._id, fileName: req.file.originalname, ocrStatus: 'processing' }); try { const result = await Tesseract.recognize(req.file.buffer, 'eng'); const detected = detectReceipt(result.data.text); const categories = await Category.find({ type: 'expense', $or: [{ userId: req.user._id }, { isDefault: true }] }); const candidate = categories.find(c => result.data.text.toLowerCase().includes(c.name.toLowerCase())); Object.assign(item, { extractedText: result.data.text, ...detected, detectedType: 'expense', detectedCategory: candidate?._id, ocrStatus: 'completed' }); await item.save(); res.json({ success: true, item: await item.populate('detectedCategory', 'name icon'), message: 'Review and correct the extracted values before saving a transaction.' }); } catch (error) { item.ocrStatus = 'failed'; await item.save(); throw fail(`OCR could not read this image: ${error.message}`, 422); } });
+const OCR_LANG_PATH = fileURLToPath(new URL('../../', import.meta.url));
+
+async function recognizeReceipt(image) {
+	const worker = await createWorker('eng', 1, {
+		langPath: OCR_LANG_PATH,
+		gzip: false,
+		cacheMethod: 'none'
+	});
+	let timeoutId;
+
+	try {
+		const result = await Promise.race([
+			worker.recognize(image),
+			new Promise((_, reject) => {
+				timeoutId = setTimeout(
+					() => reject(fail('Receipt OCR timed out. Try a smaller or clearer image.', 504)),
+					45_000
+				);
+			})
+		]);
+		return result.data.text;
+	} finally {
+		clearTimeout(timeoutId);
+		await worker.terminate();
+	}
+}
+
+export const processOCR = asyncHandler(async (req, res) => { if (!req.file) throw fail('Upload a JPEG, PNG, or WebP receipt image.'); const item = await OCRImport.create({ userId: req.user._id, fileName: req.file.originalname, ocrStatus: 'processing' }); try { const text = await recognizeReceipt(req.file.buffer); const detected = detectReceipt(text); const categories = await Category.find({ type: 'expense', $or: [{ userId: req.user._id }, { isDefault: true }] }); const candidate = categories.find(c => text.toLowerCase().includes(c.name.toLowerCase())); Object.assign(item, { extractedText: text, ...detected, detectedType: 'expense', detectedCategory: candidate?._id, ocrStatus: 'completed' }); await item.save(); res.json({ success: true, item: await item.populate('detectedCategory', 'name icon'), message: 'Review and correct the extracted values before saving a transaction.' }); } catch (error) { item.ocrStatus = 'failed'; await item.save(); throw fail(`OCR could not read this image: ${error.message}`, 422); } });
 export const confirmOCR = asyncHandler(async (req, res) => { const receipt = await OCRImport.findOne({ _id: req.params.id, userId: req.user._id }); if (!receipt || receipt.ocrStatus !== 'completed') throw fail('Completed OCR record not found.', 404); if (receipt.createdTransactionId) throw fail('This OCR result has already been saved.', 409); const transaction = await Transaction.create(await transactionPayload(req.body, req.user._id, 'ocr')); receipt.createdTransactionId = transaction._id; await receipt.save(); await evaluateBudget(transaction); res.status(201).json({ success: true, item: transaction }); });

@@ -294,7 +294,7 @@ export const dashboard = asyncHandler(async (req, res) => {
     month
   );
 
-  const [budgets, recent, notifications, tips, announcements, campusTips] =
+  const [budgets, recent, notifications, tips, announcements, campusTips, dailyActivity] =
     await Promise.all([
       Budget.find({
         userId: req.user._id,
@@ -330,6 +330,25 @@ export const dashboard = asyncHandler(async (req, res) => {
         .sort({ priority: 1, createdAt: -1 })
         .limit(5)
         .lean(),
+
+      Transaction.aggregate([
+        {
+          $match: {
+            userId: req.user._id,
+            date: { $gte: summary.start, $lt: summary.end },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              day: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
+              type: '$type',
+            },
+            total: { $sum: '$amount' },
+          },
+        },
+        { $sort: { '_id.day': 1 } },
+      ]),
     ]);
 
   const spending = Object.fromEntries(
@@ -388,6 +407,7 @@ export const dashboard = asyncHandler(async (req, res) => {
         : null,
     },
     budgetCards,
+    dailyActivity,
     recent,
     notifications,
     tips,

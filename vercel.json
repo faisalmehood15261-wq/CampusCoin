@@ -4,5 +4,10 @@
     "NODE_ENV": "production",
     "CLIENT_URL": "https://campus-coin-client.vercel.app,https://campus-coin-client.vercel.app,http://localhost:5173"
   },
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "eng.traineddata"
+    }
+  },
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
 }
