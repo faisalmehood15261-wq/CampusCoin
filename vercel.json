@@ -5,8 +5,8 @@
     "CLIENT_URL": "https://campus-coin-client.vercel.app,https://campus-coin-client.vercel.app,http://localhost:5173"
   },
   "functions": {
-    "api/index.js": {
-      "includeFiles": "eng.traineddata"
+    "src/app.js": {
+      "includeFiles": "**/*.{traineddata,wasm}"
     }
   },
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]

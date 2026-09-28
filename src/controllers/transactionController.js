@@ -15,6 +15,22 @@ function parseCSV(buffer) { return new Promise((resolve, reject) => { const rows
 export const importCSV = asyncHandler(async (req, res) => { if (!req.file) throw fail('Upload a CSV file.'); const rows = await parseCSV(req.file.buffer); if (!rows.length) throw fail('The CSV is empty.'); if (rows.length > 500) throw fail('Import up to 500 rows at a time.'); const categories = await Category.find({ $or: [{ userId: req.user._id }, { isDefault: true }] }); const imported = []; const errors = []; for (let i = 0; i < rows.length; i += 1) { try { const row = rows[i]; const type = String(row.type || row.Type || 'expense').toLowerCase(); const name = String(row.category || row.Category || 'Miscellaneous').trim(); const category = categories.find(c => c.type === type && c.name.toLowerCase() === name.toLowerCase()); if (!category) throw new Error(`Category “${name}” (${type}) is unavailable.`); imported.push(await transactionPayload({ amount: row.amount || row.Amount, type, categoryId: category._id, description: row.description || row.Description, source: row.source || row.Source, date: row.date || row.Date, notes: row.notes || row.Notes }, req.user._id, 'csv')); } catch (error) { errors.push({ row: i + 2, message: error.message }); } } const saved = imported.length ? await Transaction.insertMany(imported) : []; await Promise.all(saved.map(evaluateBudget)); res.status(201).json({ success: true, imported: saved.length, errors }); });
 const detectReceipt = (text) => { const amounts = [...text.matchAll(/(?:Rs\.?|PKR|\$)?\s*([0-9]{1,7}(?:[,.][0-9]{2})?)/gi)].map(m => Number(m[1].replace(',', ''))).filter(n => Number.isFinite(n)); const dateMatch = text.match(/\b(?:\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|\d{4}[\/-]\d{1,2}[\/-]\d{1,2})\b/); return { detectedAmount: amounts.length ? Math.max(...amounts) : undefined, detectedDate: dateMatch ? new Date(dateMatch[0]) : undefined, detectedDescription: text.split(/\n+/).map(x => x.trim()).find(x => x.length > 3 && !/total|cash|tax|date/i.test(x)) || '' }; };
 const OCR_LANG_PATH = process.cwd();
+let ocrWorkerPromise;
+
+function getOCRWorker() {
+	if (!ocrWorkerPromise) {
+		ocrWorkerPromise = createWorker('eng', 1, {
+			langPath: OCR_LANG_PATH,
+			gzip: false,
+			cacheMethod: 'none'
+		}).catch(error => {
+			ocrWorkerPromise = null;
+			throw error;
+		});
+	}
+
+	return ocrWorkerPromise;
+}
 
 async function recognizeReceipt(image) {
 	let worker;
@@ -26,13 +42,12 @@ async function recognizeReceipt(image) {
 			reject(fail('Receipt OCR timed out. Try a smaller or clearer image.', 504));
 		}, 45_000);
 	});
-	const workerPromise = createWorker('eng', 1, {
-		langPath: OCR_LANG_PATH,
-		gzip: false,
-		cacheMethod: 'none'
-	});
+	const workerPromise = getOCRWorker();
 	workerPromise.then(createdWorker => {
-		if (timedOut) createdWorker.terminate().catch(() => {});
+		if (timedOut) {
+			if (ocrWorkerPromise === workerPromise) ocrWorkerPromise = null;
+			createdWorker.terminate().catch(() => {});
+		}
 	}, () => {});
 
 	try {
@@ -42,11 +57,16 @@ async function recognizeReceipt(image) {
 			timeout
 		]);
 		return result.data.text;
+	} catch (error) {
+		if (timedOut || worker) {
+			if (ocrWorkerPromise === workerPromise) ocrWorkerPromise = null;
+			if (worker) await worker.terminate().catch(() => {});
+		}
+		throw error;
 	} finally {
 		clearTimeout(timeoutId);
-		if (worker) await worker.terminate();
 	}
 }
 
-export const processOCR = asyncHandler(async (req, res) => { if (!req.file) throw fail('Upload a JPEG, PNG, or WebP receipt image.'); const item = await OCRImport.create({ userId: req.user._id, fileName: req.file.originalname, ocrStatus: 'processing' }); try { const text = await recognizeReceipt(req.file.buffer); const detected = detectReceipt(text); const categories = await Category.find({ type: 'expense', $or: [{ userId: req.user._id }, { isDefault: true }] }); const candidate = categories.find(c => text.toLowerCase().includes(c.name.toLowerCase())); Object.assign(item, { extractedText: text, ...detected, detectedType: 'expense', detectedCategory: candidate?._id, ocrStatus: 'completed' }); await item.save(); res.json({ success: true, item: await item.populate('detectedCategory', 'name icon'), message: 'Review and correct the extracted values before saving a transaction.' }); } catch (error) { item.ocrStatus = 'failed'; await item.save(); throw fail(`OCR could not read this image: ${error.message}`, 422); } });
+export const processOCR = asyncHandler(async (req, res) => { if (!req.file) throw fail('Upload a JPEG, PNG, or WebP receipt image.'); const item = await OCRImport.create({ userId: req.user._id, fileName: req.file.originalname, ocrStatus: 'processing' }); try { const text = await recognizeReceipt(req.file.buffer); const detected = detectReceipt(text); const categories = await Category.find({ type: 'expense', $or: [{ userId: req.user._id }, { isDefault: true }] }); const candidate = categories.find(c => text.toLowerCase().includes(c.name.toLowerCase())); Object.assign(item, { extractedText: text, ...detected, detectedType: 'expense', detectedCategory: candidate?._id, ocrStatus: 'completed' }); await item.save(); res.json({ success: true, item: await item.populate('detectedCategory', 'name icon'), message: 'Review and correct the extracted values before saving a transaction.' }); } catch (error) { item.ocrStatus = 'failed'; await item.save(); throw fail(`OCR could not read this image: ${error.message}`, error.statusCode || 422); } });
 export const confirmOCR = asyncHandler(async (req, res) => { const receipt = await OCRImport.findOne({ _id: req.params.id, userId: req.user._id }); if (!receipt || receipt.ocrStatus !== 'completed') throw fail('Completed OCR record not found.', 404); if (receipt.createdTransactionId) throw fail('This OCR result has already been saved.', 409); const transaction = await Transaction.create(await transactionPayload(req.body, req.user._id, 'ocr')); receipt.createdTransactionId = transaction._id; await receipt.save(); await evaluateBudget(transaction); res.status(201).json({ success: true, item: transaction }); });
