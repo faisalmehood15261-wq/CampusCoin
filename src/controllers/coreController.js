@@ -1145,27 +1145,34 @@ export const adminStats = asyncHandler(async (_req, res) => {
     totalUsers,
     activeUsers,
     totalTransactions,
-    categories,
+    allCategories,
+    usageAgg,
   ] = await Promise.all([
     User.countDocuments(),
     User.countDocuments({ isActive: true }),
     Transaction.countDocuments(),
+    Category.find({ isDefault: true })
+      .select('name type icon')
+      .lean(),
     Transaction.aggregate([
       { $match: { categoryId: { $ne: null } } },
       { $group: { _id: '$categoryId', uses: { $sum: 1 } } },
-      { $sort: { uses: -1 } },
-      { $limit: 8 },
-      {
-        $lookup: {
-          from: 'categories',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'category',
-        },
-      },
-      { $unwind: '$category' },
     ]),
   ]);
+
+  const usageMap = new Map(
+    usageAgg.map(u => [String(u._id), u.uses])
+  );
+
+  const categories = allCategories
+    .map(c => ({
+      _id: c._id,
+      name: c.name,
+      type: c.type,
+      icon: c.icon,
+      uses: usageMap.get(String(c._id)) || 0,
+    }))
+    .sort((a, b) => b.uses - a.uses);
 
   res.json({
     success: true,
@@ -1173,10 +1180,7 @@ export const adminStats = asyncHandler(async (_req, res) => {
     activeUsers,
     disabledUsers: totalUsers - activeUsers,
     totalTransactions,
-    categories: categories.map(c => ({
-      name: c.category.name,
-      uses: c.uses,
-    })),
+    categories,
   });
 });
 
@@ -1326,12 +1330,28 @@ const adminCrud = (Model, allowed) => ({
   }),
 });
 
-export const adminCategories = adminCrud(Category, [
-  'name',
-  'type',
-  'icon',
-  'isDefault',
-]);
+export const adminCategories = {
+  ...adminCrud(Category, ['name', 'type', 'icon', 'isDefault']),
+
+  remove: asyncHandler(async (req, res) => {
+    const item = await Category.findById(req.params.id);
+
+    if (!item) {
+      throw fail('Category not found.', 404);
+    }
+
+    await Transaction.updateMany(
+      { categoryId: item._id },
+      { $set: { categoryId: null } }
+    );
+
+    await Budget.deleteMany({ categoryId: item._id });
+
+    await Category.findByIdAndDelete(item._id);
+
+    res.json({ success: true });
+  }),
+};
 
 export const adminTipTemplates = adminCrud(TipTemplate, [
   'title',
