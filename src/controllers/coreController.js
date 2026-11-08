@@ -20,6 +20,7 @@ import {
 import {
   asyncHandler,
   cleanUser,
+  escapeRegex,
   fail,
   monthKey,
 } from '../utils/http.js';
@@ -92,7 +93,7 @@ export const createCategory = asyncHandler(async (req, res) => {
 
   if (
     await Category.exists({
-      name: new RegExp(`^${name.trim()}$`, 'i'),
+      name: new RegExp(`^${escapeRegex(name.trim())}$`, 'i'),
       type,
       $or: [
         { userId: req.user._id },

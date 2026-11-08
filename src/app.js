@@ -32,7 +32,6 @@ const app = express();
 // authenticated requests. Add preview/staging origins through CLIENT_URL instead.
 const DEFAULT_ORIGINS = [
   'https://campus-coin-client.vercel.app',
-  'https://campus-coin-client.vercel.app',
   'http://localhost:5173'
 ];
 
