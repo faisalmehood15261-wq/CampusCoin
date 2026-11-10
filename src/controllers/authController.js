@@ -44,6 +44,7 @@ export const google = asyncHandler(async (req, res) => {
   await ensureDefaultCategories(); let user = await User.findOne({ $or: [{ googleId: profile.sub }, { email: profile.email.toLowerCase() }] });
   if (user && !user.googleId) { user.googleId = profile.sub; user.authProvider = 'google'; user.avatar ||= profile.picture; await user.save(); }
   if (!user) user = await User.create({ name: profile.name || profile.email.split('@')[0], email: profile.email.toLowerCase(), googleId: profile.sub, avatar: profile.picture, authProvider: 'google' });
+  if (user.role === 'admin') throw fail('Administrator accounts must sign in through the admin portal.', 403);
   if (!user.isActive) throw fail('This account has been disabled. Contact your administrator.', 403);
   user.lastLoginAt = new Date(); await user.save(); setSession(req, res, user); await recordLogin(user._id); res.json({ success: true, user: cleanUser(user) });
 });
