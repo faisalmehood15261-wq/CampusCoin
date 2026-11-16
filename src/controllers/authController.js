@@ -21,21 +21,9 @@ export const register = asyncHandler(async (req, res) => {
 });
 export const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body; const user = await User.findOne({ email: String(email || '').trim().toLowerCase() }).select('+passwordHash');
-  if (!user || user.role === 'admin' || !user.passwordHash || !(await bcrypt.compare(password || '', user.passwordHash))) throw fail('Invalid email or password.', 401);
+  if (!user || !user.passwordHash || !(await bcrypt.compare(password || '', user.passwordHash))) throw fail('Invalid email or password.', 401);
   if (!user.isActive) throw fail('This account has been disabled. Contact your administrator.', 403);
   user.lastLoginAt = new Date(); await user.save(); setSession(req, res, user); await recordLogin(user._id); res.json({ success: true, user: cleanUser(user) });
-});
-export const adminLogin = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
-  const user = await User.findOne({ email: String(email || '').trim().toLowerCase() }).select('+passwordHash');
-  // Keep this response deliberately generic: it must not disclose whether an account exists.
-  if (!user || user.role !== 'admin' || !user.passwordHash || !(await bcrypt.compare(password || '', user.passwordHash))) {
-    throw fail('Invalid administrator credentials.', 401);
-  }
-  if (!user.isActive) throw fail('This account has been disabled. Contact your administrator.', 403);
-  user.lastLoginAt = new Date(); await user.save();
-  setSession(req, res, user); await recordLogin(user._id);
-  res.json({ success: true, user: cleanUser(user) });
 });
 export const google = asyncHandler(async (req, res) => {
   if (!process.env.GOOGLE_CLIENT_ID) throw fail('Google sign-in is not configured.', 503); const { credential } = req.body; if (!credential) throw fail('Google credential is required.');
@@ -44,7 +32,6 @@ export const google = asyncHandler(async (req, res) => {
   await ensureDefaultCategories(); let user = await User.findOne({ $or: [{ googleId: profile.sub }, { email: profile.email.toLowerCase() }] });
   if (user && !user.googleId) { user.googleId = profile.sub; user.authProvider = 'google'; user.avatar ||= profile.picture; await user.save(); }
   if (!user) user = await User.create({ name: profile.name || profile.email.split('@')[0], email: profile.email.toLowerCase(), googleId: profile.sub, avatar: profile.picture, authProvider: 'google' });
-  if (user.role === 'admin') throw fail('Administrator accounts must sign in through the admin portal.', 403);
   if (!user.isActive) throw fail('This account has been disabled. Contact your administrator.', 403);
   user.lastLoginAt = new Date(); await user.save(); setSession(req, res, user); await recordLogin(user._id); res.json({ success: true, user: cleanUser(user) });
 });
